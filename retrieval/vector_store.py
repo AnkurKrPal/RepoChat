@@ -50,9 +50,13 @@ def store_chunks(
 
         print(f"Storing batch {i}")
 
+        batch_embeddings = embeddings[i:i+batch_size]
+        if hasattr(batch_embeddings, "tolist"):
+            batch_embeddings = batch_embeddings.tolist()
+
         collection.add(
             ids=ids[i:i+batch_size],
-            embeddings=embeddings[i:i+batch_size].tolist(),
+            embeddings=batch_embeddings,
             documents=documents[i:i+batch_size],
             metadatas=metadatas[i:i+batch_size],
         )

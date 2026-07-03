@@ -20,6 +20,8 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ragdb
       GROQ_API_KEY: ${GROQ_API_KEY}
       REPOCHAT_API_KEY: ${REPOCHAT_API_KEY}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       JWT_ALGORITHM: HS256
       JWT_ACCESS_TOKEN_EXPIRE_MINUTES: 60
@@ -45,6 +47,8 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ragdb
       GROQ_API_KEY: ${GROQ_API_KEY}
       REPOCHAT_API_KEY: ${REPOCHAT_API_KEY}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY}
     depends_on:
       postgres:
         condition: service_healthy

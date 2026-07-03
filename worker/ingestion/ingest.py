@@ -14,6 +14,65 @@ from retrieval.schema import ChunkSchema, ChunkType
 import json
 import os
 import shutil
+from collections import defaultdict
+
+
+def _build_repo_overview(all_chunks, repo_path):
+    """Build a signature-enhanced repository structure chunk.
+
+    Groups every file's function/class signatures into a compact tree
+    so the LLM can understand *which file does what* at a glance.
+    """
+    # Group signatures by file
+    file_signatures = defaultdict(list)
+    files_seen = set()
+
+    for chunk in all_chunks:
+        file_path = chunk.get("file", "")
+        files_seen.add(file_path)
+
+        sig = chunk.get("signature", "").strip()
+        chunk_type = chunk.get("type", "")
+
+        # Only collect meaningful signatures (functions, classes, methods)
+        if sig and chunk_type not in ("plaintext", "markdown", ""):
+            # Clean up the signature — first line only, no body
+            short_sig = sig.split("\n")[0].strip()
+            if short_sig and short_sig not in file_signatures[file_path]:
+                file_signatures[file_path].append(short_sig)
+
+    # Build the tree text
+    lines = ["REPOSITORY STRUCTURE", "=" * 40, ""]
+
+    # Sort files for consistent ordering
+    for file_path in sorted(files_seen):
+        # Make path relative to repo root for readability
+        rel_path = os.path.relpath(file_path, repo_path)
+
+        sigs = file_signatures.get(file_path, [])
+        if sigs:
+            lines.append(f"📄 {rel_path}")
+            for sig in sigs:
+                lines.append(f"   ├─ {sig}")
+            lines.append("")
+        else:
+            lines.append(f"📄 {rel_path}")
+            lines.append("")
+
+    overview_text = "\n".join(lines)
+
+    # Cap at ~3000 chars to avoid bloating embeddings
+    if len(overview_text) > 3000:
+        overview_text = overview_text[:2950] + "\n... (truncated)"
+
+    return {
+        "file": "REPO_OVERVIEW",
+        "type": "repository_structure",
+        "signature": "repository_structure",
+        "start_line": 0,
+        "end_line": 0,
+        "content": overview_text,
+    }
 
 
 def ingest_repo(repo_id: int):
@@ -75,7 +134,26 @@ def ingest_repo(repo_id: int):
 
                 chunk_index += 1
 
-        print(f"\nTotal chunks: {len(all_chunks)}")
+        print(f"\nTotal file chunks: {len(all_chunks)}")
+
+        # Build and inject the repo overview chunk
+        overview_chunk = _build_repo_overview(all_chunks, repo_path)
+        all_chunks.append(overview_chunk)
+
+        overview_obj = Chunk(
+            repo_id=repo.id,
+            chunk_index=chunk_index,
+            file_path=overview_chunk["file"],
+            chunk_type=overview_chunk["type"],
+            signature=overview_chunk["signature"],
+            start_line=overview_chunk["start_line"],
+            end_line=overview_chunk["end_line"],
+            content=overview_chunk["content"],
+        )
+        chunk_objects.append(overview_obj)
+        chunk_index += 1
+
+        print(f"Total chunks (with overview): {len(all_chunks)}")
 
         print("\nSaving chunks to Postgres...")
 

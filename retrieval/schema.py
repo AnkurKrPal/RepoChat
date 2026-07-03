@@ -7,6 +7,7 @@ class ChunkType(str, Enum):
     CLASS = "class_def"
     PLAINTEXT = "plaintext"
     MARKDOWN = "markdown"
+    REPO_OVERVIEW = "repository_structure"
 
 @dataclass
 class ChunkSchema:
