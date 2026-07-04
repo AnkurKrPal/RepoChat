@@ -95,7 +95,7 @@ export async function login(username, password) {
   const res = await fetch(`${API_BASE}/api/auth/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: formData,
+    body: formData.toString(),
   });
 
   if (!res.ok) throw new Error('Login failed');

@@ -1,282 +1,195 @@
+<div align="center">
+
 # RepoChat
 
-> **Talk to your codebase** — an AI-powered RAG chatbot that ingests GitHub repositories and lets you ask questions about the code in natural language.
+A RAG-powered AI chatbot that lets you have conversations with any GitHub repository. Paste a repo URL, and it gets cloned, parsed, chunked, embedded, and indexed — then you can ask questions about the codebase and get grounded, cited answers.
 
-![Architecture](https://img.shields.io/badge/stack-FastAPI%20%7C%20Groq%20%7C%20ChromaDB%20%7C%20Vite-818cf8?style=flat-square)
+![Python](https://img.shields.io/badge/Python%203.11-3776AB?style=flat-square&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?style=flat-square&logo=postgresql&logoColor=white)
+![Redis](https://img.shields.io/badge/Redis-DC382D?style=flat-square&logo=redis&logoColor=white)
+![ChromaDB](https://img.shields.io/badge/ChromaDB-FF6F00?style=flat-square)
+![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white)
+![Groq](https://img.shields.io/badge/Groq%20AI-F55036?style=flat-square)
+
+</div>
 
 ---
 
-## Features
+## What it does
 
-- **Hybrid RAG retrieval** — Semantic search (sentence-transformers) combined with BM25 keyword search and filename matching via ChromaDB
-- **Intelligent query routing** — Rewrites follow-up questions using chat history and routes queries to overview, architecture, implementation, or casual handling
-- **Adaptive retrieval** — Diverse multi-file retrieval for high-level questions; targeted retrieval for implementation queries; no retrieval for casual messages
-- **Real-time streaming** — SSE (Server-Sent Events) streams Groq LLM tokens to the browser in real time
-- **Tree-sitter chunking** — Parses Python, JavaScript, TypeScript, Go, Rust, Java, C, and C++ into function/class-level chunks; markdown and plain-text files are chunked separately
-- **Background ingestion** — Paste a GitHub URL; the repo is cloned, chunked, embedded, and indexed asynchronously via Celery
-- **Repository deletion** — Remove repos from the sidebar context menu; vectors and database records are cleaned up in the background
-- **Persistent chat history** — Messages are stored in PostgreSQL, loaded on repo selection, and paginated with "Load Older Messages"
-- **Source citations** — Retrieved code chunks are shown with the response; click to open a syntax-highlighted preview or jump to the file on GitHub
-- **User accounts** — Register and log in with username/password, or sign in with Google OAuth
-- **Per-user isolation** — Each user sees and manages only their own repositories
-- **JWT authentication** — Bearer token auth on all repo and chat endpoints; sessions are validated on load
-- **Responsive UI** — Dark-themed Vite frontend with markdown rendering, code highlighting, toast notifications, and a mobile sidebar
+You paste a GitHub URL. RepoChat clones it, walks the file tree, parses code into semantic chunks using Tree-sitter, generates embeddings, and stores everything in ChromaDB. Then you chat with it.
+
+**Ingestion Pipeline**: The repo is cloned, walked for supported files (`.py`, `.js`, `.ts`, `.go`, `.rs`, `.java`, `.cpp`, `.c`, `.md`), and each file is parsed using Tree-sitter into AST-aware chunks — functions, classes, and methods get their own chunks with preserved signatures, not arbitrary line splits. A repository overview chunk is also generated that maps every file to its key functions/classes, giving the LLM a structural understanding of the entire codebase at a glance.
+
+**Retrieval & Conversation Pipeline (The "Talk" Algorithm)**:
+When a query is received, it goes through a multi-step pipeline:
+1. **Query Rewriting & Intent Routing**: The user's query and the last few messages of chat history are sent to a Groq LLaMA model to rewrite the query into a standalone sentence (e.g., resolving pronouns like "it"). The intent is also classified into `overview`, `architecture`, `implementation`, or `casual`.
+2. **Hybrid Retrieval**: For technical intents, the system queries ChromaDB. It combines semantic vector similarity (finding code with similar meaning), BM25 keyword scoring (finding exact variable/function names), and filename matching. The results are scored and weighted (Semantic: 0.55, BM25: 0.25, Filename: 0.20) to ensure high relevance.
+3. **Context Trimming & Injection**: The highest-scoring chunks are gathered, respecting a strict token budget. An auto-generated `repository_structure` chunk is always injected for `overview` queries to give the model a global map of the project.
+4. **LLM Generation**: The trimmed context, chat history, and system prompts are sent to Groq (LLaMA 3) to generate the final response.
+
+**Ingestion Lifecycle**:
+- `pending`: Repo added, waiting for worker.
+- `indexing`: Worker is cloning, parsing, chunking, and embedding.
+- `ready`: Indexed and available for chat.
+- `error`: Something failed (message stored for debugging).
+
+## Deployment Status
+Currently, RepoChat is **not deployed** to a live production environment. The application relies on a Dockerized infrastructure (PostgreSQL, Redis, ChromaDB, Celery Workers, FastAPI, Vite) and is intended to be run locally. Because the background workers need to clone arbitrary GitHub repositories and parse them, running this locally ensures isolated and secure execution.
+
+The embedding provider is built behind a strategy interface — `SentenceTransformer` (local, heavy) and `Gemini API` (lightweight, free tier) are both implemented. Switching is a one-line `.env` change.
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Frontend | Vanilla JS, Vite 8, Marked, Highlight.js |
+| Backend | Python, FastAPI, SQLAlchemy |
+| Database | PostgreSQL |
+| Vector Store | ChromaDB (persistent) |
+| Queue | Redis, Celery |
+| Parsing | Tree-sitter (AST-aware chunking) |
+| Embeddings | SentenceTransformer / Gemini API (strategy pattern) |
+| LLM | Groq (Llama) |
+| Auth | JWT, Google OAuth |
+
+The embedding provider is built behind a strategy interface, so the underlying provider (e.g. SentenceTransformer → Gemini API → OpenAI) is swappable without touching the rest of the codebase.
+
+---
+
+## Core Features
+
+### Chat with Any GitHub Repository
+Paste a GitHub URL, wait for ingestion, and start asking questions. Answers are grounded in the actual codebase with file path and line number citations. Responses stream token-by-token via SSE.
+
+<div align="center">
+  <img src="docs/gifs/chat_demo.gif" alt="Chat with Repository" width="800" />
+</div>
+
+### Cited Sources with Expandable Chunks
+Every answer includes the exact code chunks that were used as context. Click to expand and see the raw source code the LLM was grounded on — full transparency, no hallucination.
+
+<div align="center">
+  <img src="docs/gifs/cited_sources.gif" alt="Cited Source Chunks" width="800" />
+</div>
+
+### Smart Query Routing
+Queries are automatically classified and routed to different retrieval strategies:
+- **Overview/Architecture** → diverse retrieval across many files (max 2 chunks per file)
+- **Implementation** → focused retrieval on the most relevant code
+- **Casual** → no retrieval needed, direct conversational response
+
+<div align="center">
+  <img src="docs/gifs/query_routing.gif" alt="Query Routing" width="800" />
+</div>
+
+### More Features
+- **AST-Aware Chunking:** Tree-sitter parses code into functions, classes, and methods — not arbitrary line splits. Each chunk preserves its signature.
+- **Hybrid Retrieval:** Combines semantic similarity, BM25 keyword matching, and filename boosting for accurate results.
+- **Repo Overview Chunk:** Auto-generated structural map showing which file defines which functions/classes, injected during ingestion.
+- **Streaming Responses:** Token-by-token SSE streaming with markdown rendering and syntax highlighting.
+- **Chat History:** Persistent message history with conversation context for follow-up questions.
+- **Auth:** JWT-based authentication with Google OAuth support.
 
 ---
 
 ## Architecture
 
-```
-┌─────────────┐     ┌──────────────┐     ┌──────────┐
-│   Frontend   │────▶│   FastAPI     │────▶│  Groq AI  │
-│  (Vite/JS)   │ SSE │   Backend     │     │ LLaMA 3.3 │
-│  port 3000   │◀────│   port 8000   │     └──────────┘
-└─────────────┘     └──────┬───────┘
-                           │
-              ┌────────────┼────────────┐
-              ▼            ▼            ▼
-        ┌──────────┐ ┌──────────┐ ┌──────────┐
-        │ PostgreSQL│ │ ChromaDB │ │  Redis   │
-        │ users,    │ │ vectors  │ │  broker  │
-        │ repos,    │ │ per repo │ │          │
-        │ messages  │ └──────────┘ └──────────┘
-        └──────────┘                        │
-                                            ▼
-                                      ┌──────────┐
-                                      │  Celery   │
-                                      │  Worker   │
-                                      │ ingest /  │
-                                      │  delete   │
-                                      └──────────┘
+Four independently scalable pieces: the API, the queue, the worker, and the datastores.
+
+```mermaid
+flowchart TB
+    FE["Vite Frontend"] -->|REST / JWT| API["FastAPI Backend"]
+    API -->|enqueue| Q["Redis + Celery"]
+    Q --> W["Celery Worker"]
+    W -->|clone & parse| GH["GitHub"]
+    W -->|Tree-sitter AST chunking| CHUNK["Chunker"]
+    W -->|embed| EMB["Embedding Provider"]
+    W -->|store vectors| CHROMA[("ChromaDB")]
+    W -->|store metadata| PG[("PostgreSQL")]
+    API -->|hybrid retrieval| CHROMA
+    API -->|BM25 + semantic| CHROMA
+    API -->|generate answer| GROQ["Groq LLM"]
+    API <-->|read/write| PG
 ```
 
----
+## Getting Started
 
-## Tech Stack
-
-| Layer          | Technology                                      |
-| -------------- | ----------------------------------------------- |
-| **Frontend**   | Vite, Vanilla JS, marked, highlight.js          |
-| **Backend**    | FastAPI, Uvicorn, SQLAlchemy, PyJWT, bcrypt     |
-| **LLM**        | Groq Cloud (LLaMA 3.3 70B Versatile)            |
-| **Embeddings** | sentence-transformers (all-MiniLM-L6-v2)        |
-| **Vector DB**  | ChromaDB (persistent, one collection per repo)  |
-| **Search**     | Hybrid — cosine similarity + BM25 + filename    |
-| **Parsing**    | tree-sitter, tree-sitter-languages, GitPython   |
-| **Queue**      | Celery + Redis                                  |
-| **Database**   | PostgreSQL 15                                   |
-| **Auth**       | JWT (local) + Google OAuth 2.0 (optional)       |
-| **Deploy**     | Docker Compose                                  |
-
----
-
-## Quick Start
-
-### Prerequisites
-
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running
-- A [Groq API key](https://console.groq.com/keys)
-
-### 1. Clone and configure
+### Docker Compose (recommended)
 
 ```bash
-git clone https://github.com/your-user/RepoChat.git
-cd RepoChat
 cp .env.example .env
-```
-
-Edit `.env`:
-
-```env
-GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxxx
-
-JWT_SECRET_KEY=your-super-secret-key-here
-JWT_ALGORITHM=HS256
-JWT_ACCESS_TOKEN_EXPIRE_MINUTES=60
-
-# Optional: Google OAuth
-GOOGLE_CLIENT_ID=
-GOOGLE_CLIENT_SECRET=
-GOOGLE_REDIRECT_URI=http://localhost:8000/api/auth/google/callback
-FRONTEND_URL=http://localhost:3000
-```
-
-Google OAuth is optional. Username/password registration works without it.
-
-### 2. Build and run
-
-```bash
+# Fill in your GROQ_API_KEY
 docker compose up --build
 ```
 
-This starts 5 containers:
+This starts PostgreSQL, Redis, the FastAPI backend, Celery worker, and the Vite frontend, with hot-reload on the backend via volume mounts.
 
-| Container  | Port  | Description                        |
-| ---------- | ----- | ---------------------------------- |
-| `frontend` | 3000  | Vite-built SPA (nginx)             |
-| `backend`  | 8000  | FastAPI + Uvicorn                  |
-| `worker`   | —     | Celery ingestion and deletion worker |
-| `postgres` | 5432  | Users, repos, chunks, and messages |
-| `redis`    | 6379  | Celery message broker              |
+| Service | URL |
+|---|---|
+| Frontend | `http://localhost:3000` |
+| Backend API | `http://localhost:8000` |
 
-First startup may take several minutes while the worker downloads the embedding model.
+### Environment Variables
 
-### 3. Open the app
+```env
+GROQ_API_KEY=your_groq_key          # Required — LLM for chat
+JWT_SECRET_KEY=your_secret           # Required — auth
 
-Navigate to **http://localhost:3000**
+# Embedding provider: "sentence_transformer" (local) or "gemini" (API)
+EMBEDDING_PROVIDER=sentence_transformer
+EMBEDDING_API_KEY=                   # Required only if using gemini
 
-### 4. Use it
-
-1. Create an account or sign in with Google
-2. Paste a GitHub repo URL in the sidebar and click **Ingest**
-3. Wait for the status dot to turn green (ready)
-4. Ask questions about the code; responses stream in real time with source citations
-5. Right-click a repo in the sidebar to delete it
-
----
-
-## Local Development (without Docker)
-
-### Backend
-
-```bash
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-
-export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ragdb
-export REDIS_URL=redis://localhost:6379/0
-export GROQ_API_KEY=gsk_xxx
-export JWT_SECRET_KEY=your-secret-key
-export FRONTEND_URL=http://localhost:3000
-
-uvicorn backend.main:app --reload --port 8000
-
-# Separate terminal — Celery worker
-celery -A worker.tasks worker --loglevel=info --concurrency=1
+# Optional — Google OAuth
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GOOGLE_REDIRECT_URI=http://localhost:8000/api/auth/google/callback
 ```
-
-PostgreSQL and Redis must be running (via Docker or locally).
-
-### Frontend
-
-```bash
-cd frontend
-npm install
-npm run dev   # http://localhost:3000
-```
-
-The Vite dev server proxies `/api/*` to `http://localhost:8000` automatically.
-
-For production builds, set `VITE_API_BASE` to the backend URL if the frontend is served separately.
-
----
-
-## API Endpoints
-
-All repo and chat endpoints require a valid JWT in the `Authorization: Bearer <token>` header.
-
-### Authentication
-
-| Method | Path                          | Description                              |
-| ------ | ----------------------------- | ---------------------------------------- |
-| POST   | `/api/auth/register`          | Create account (username + password)     |
-| POST   | `/api/auth/token`             | Log in (OAuth2 password form)            |
-| GET    | `/api/auth/me`                | Validate session and return current user |
-| GET    | `/api/auth/google/login`      | Redirect to Google OAuth consent screen  |
-| GET    | `/api/auth/google/callback`   | Google OAuth callback (redirects to frontend with JWT) |
-
-### Repositories
-
-| Method | Path                      | Description                              |
-| ------ | ------------------------- | ---------------------------------------- |
-| POST   | `/repos`                  | Start ingesting a GitHub repository      |
-| GET    | `/repos`                  | List current user's repositories         |
-| GET    | `/repos/{id}/status`      | Get ingestion status for a repo          |
-| DELETE | `/repos/{id}`             | Start background deletion of a repo      |
-| GET    | `/repos/{id}/messages`    | Paginated chat history (`skip`, `limit`) |
-
-### Chat
-
-| Method | Path             | Description                                        |
-| ------ | ---------------- | -------------------------------------------------- |
-| POST   | `/chat`          | Send a chat query (non-streaming, with sources)    |
-| GET    | `/chat/stream`   | SSE streaming chat (`repo_id`, `query` query params) |
-
-The frontend calls these through an `/api` prefix. In Docker and Vite dev mode, nginx/Vite rewrites `/api/repos` to `/repos` while keeping `/api/auth/*` unchanged.
-
----
-
-## Environment Variables
-
-| Variable                          | Required | Description                                      |
-| --------------------------------- | -------- | ------------------------------------------------ |
-| `GROQ_API_KEY`                    | Yes      | Groq Cloud API key for LLM calls                 |
-| `DATABASE_URL`                    | Yes      | PostgreSQL connection string                     |
-| `JWT_SECRET_KEY`                  | Yes      | Secret used to sign JWT access tokens            |
-| `JWT_ALGORITHM`                   | No       | JWT algorithm (default: `HS256`)                 |
-| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | No       | Token lifetime in minutes (default: `60`)        |
-| `GOOGLE_CLIENT_ID`                | No       | Google OAuth client ID                           |
-| `GOOGLE_CLIENT_SECRET`            | No       | Google OAuth client secret                       |
-| `GOOGLE_REDIRECT_URI`             | No       | OAuth callback URL (must match Google Console)   |
-| `FRONTEND_URL`                    | No       | Frontend origin for OAuth redirect after login   |
-| `VITE_API_BASE`                   | No       | Backend URL for production frontend builds       |
-
----
 
 ## Project Structure
 
-```
+```text
 RepoChat/
 ├── backend/
-│   ├── main.py                 # FastAPI app entry point
-│   ├── database.py             # SQLAlchemy engine and session
-│   ├── models.py               # User, Repo, Chunk, Message models
-│   ├── schemas.py              # Pydantic request/response schemas
+│   ├── main.py                  # FastAPI entry point
+│   ├── database.py              # SQLAlchemy engine & sessions
+│   ├── models.py                # Repo, Chunk, Message, User
 │   ├── routes/
-│   │   ├── auth.py             # Registration, login, Google OAuth
-│   │   └── repos.py            # Repo CRUD, chat, message history
+│   │   ├── repos.py             # Repo CRUD, chat, streaming
+│   │   └── auth.py              # JWT, Google OAuth, registration
 │   └── services/
-│       ├── auth_service.py     # JWT creation and validation
-│       ├── chat_service.py     # RAG chat and SSE streaming
-│       └── repo_service.py     # Repo insertion
-├── frontend/
-│   ├── src/
-│   │   ├── main.js             # App shell and DOM layout
-│   │   ├── app.js              # Auth, chat, repo management logic
-│   │   ├── api.js              # Centralized API client
-│   │   └── style.css           # Dark theme styles
-│   ├── index.html              # Login modal and app mount point
-│   ├── vite.config.js          # Dev proxy and build config
-│   ├── Dockerfile              # Multi-stage nginx build
-│   └── nginx.conf              # Reverse proxy for /api
-├── llm/
-│   ├── groq_client.py          # Groq API (streaming and non-streaming)
-│   ├── prompts.py              # System prompts per query type
-│   └── query_pipeline.py       # Query rewrite and intent routing
-├── retrieval/
-│   ├── chroma_client.py        # ChromaDB client (persistent)
-│   ├── vector_store.py         # Hybrid retrieval, storage, deletion
-│   └── schema.py               # Chunk and retrieval schemas
+│       ├── chat_service.py      # Retrieval → LLM pipeline
+│       ├── repo_service.py      # Repo creation logic
+│       └── auth_service.py      # Token generation & validation
 ├── worker/
-│   ├── celery_app.py           # Celery configuration
-│   ├── tasks.py                  # ingest_repo and delete_repo tasks
-│   ├── deletion/
-│   │   └── delete.py           # Remove ChromaDB collection and DB row
+│   ├── celery_app.py            # Celery configuration
+│   ├── tasks.py                 # Celery task definitions
+│   ├── ingestion/
+│   │   ├── ingest.py            # Full ingestion pipeline
+│   │   ├── repo_loader.py       # Git clone
+│   │   ├── file_walker.py       # File discovery & filtering
+│   │   └── chunker.py           # Tree-sitter AST chunking
 │   ├── embeddings/
-│   │   └── embedder.py         # sentence-transformers loader
-│   └── ingestion/
-│       ├── ingest.py           # Full ingestion pipeline
-│       ├── repo_loader.py      # Git clone
-│       ├── file_walker.py      # File discovery with skip rules
-│       └── chunker.py          # tree-sitter and markdown chunking
+│   │   ├── embedder.py          # Public embedding API
+│   │   └── provider.py          # Strategy pattern providers
+│   └── deletion/
+│       └── delete.py            # Repo cleanup
+├── retrieval/
+│   ├── vector_store.py          # ChromaDB storage & hybrid retrieval
+│   ├── chroma_client.py         # ChromaDB client singleton
+│   └── schema.py                # Chunk & retrieval schemas
+├── llm/
+│   ├── groq_client.py           # Groq API client
+│   ├── prompts.py               # System prompts
+│   └── query_pipeline.py        # Query rewriting & intent routing
+├── frontend/
+│   └── src/
+│       ├── app.js               # Main application logic
+│       ├── api.js               # API client with JWT handling
+│       ├── main.js              # Entry point & auth flow
+│       └── style.css            # UI styling
 ├── docker-compose.yml
-├── Dockerfile                  # Backend and worker image
-├── requirements.txt
-└── .env.example
+├── Dockerfile
+└── requirements.txt
 ```
-
----
-
-## License
-
-MIT

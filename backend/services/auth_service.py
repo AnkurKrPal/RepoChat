@@ -3,14 +3,14 @@ import jwt
 from datetime import datetime, timedelta
 from fastapi import Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
-import bcrypt
+from passlib.context import CryptContext
 
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "fallback-dev-secret")
 ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 
-# This automatically extracts the token from the "Authorization: Bearer <token>" header
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/token")
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def create_access_token(data: dict):
     to_encode = data.copy()
@@ -37,13 +37,7 @@ async def require_auth(token: str = Depends(oauth2_scheme)):
 def verify_password(plain_password, hashed_password):
     if not hashed_password:
         return False
-    return bcrypt.checkpw(
-        plain_password.encode("utf-8"),
-        hashed_password.encode("utf-8"),
-    )
+    return pwd_context.verify(plain_password, hashed_password)
 
 def get_password_hash(password):
-    return bcrypt.hashpw(
-        password.encode("utf-8"),
-        bcrypt.gensalt(),
-    ).decode("utf-8")
+    return pwd_context.hash(password)

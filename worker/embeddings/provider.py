@@ -68,12 +68,15 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
         "models/gemini-embedding-2:batchEmbedContents"
     )
     _DIM = 384
-    _BATCH_SIZE = 100  # Gemini batch limit
+    _BATCH_SIZE = 25  # Small batches to respect free-tier rate limits
+    _MAX_RETRIES = 4
 
     def __init__(self):
         import requests as _req  # ensure available at init time
+        import time as _time
 
         self._requests = _req
+        self._time = _time
         self._api_key = os.environ.get("EMBEDDING_API_KEY", "")
         if not self._api_key:
             raise ValueError(
@@ -94,6 +97,10 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
             print(f"Embedding batch {start}–{start + len(batch)} / {total}")
             embeddings = self._batch_embed(batch)
             all_embeddings.extend(embeddings)
+
+            # Sleep between batches to avoid rate limiting
+            if start + self._BATCH_SIZE < total:
+                self._time.sleep(1)
 
         return np.array(all_embeddings)
 
@@ -128,17 +135,29 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
             for t in texts
         ]
 
-        resp = self._requests.post(
-            self._BATCH_URL,
-            params={"key": self._api_key},
-            json={"requests": requests_payload},
-            timeout=60,
-        )
+        for attempt in range(self._MAX_RETRIES):
+            resp = self._requests.post(
+                self._BATCH_URL,
+                params={"key": self._api_key},
+                json={"requests": requests_payload},
+                timeout=60,
+            )
+
+            if resp.status_code == 429:
+                wait = 2 ** attempt * 5  # 5s, 10s, 20s, 40s
+                print(f"Rate limited (429). Retrying in {wait}s... "
+                      f"(attempt {attempt + 1}/{self._MAX_RETRIES})")
+                self._time.sleep(wait)
+                continue
+
+            resp.raise_for_status()
+            return [
+                item["values"]
+                for item in resp.json()["embeddings"]
+            ]
+
+        # Final attempt — let it raise if still 429
         resp.raise_for_status()
-        return [
-            item["values"]
-            for item in resp.json()["embeddings"]
-        ]
 
 
 # ---------------------------------------------------------------------------
